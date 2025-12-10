@@ -1,0 +1,579 @@
+{
+  "diagram": {
+    "title": "Hypixel Skyblock Bazaar Tracker - Detailed Architecture",
+    "description": "Comprehensive system diagram with component details, data flows, and implementation specifics",
+    "version": "2.0",
+    "last_updated": "2025-12-10",
+    "author": "System Architecture"
+  },
+  "system_overview": {
+    "purpose": "Real-time tracking and visualization of Hypixel Skyblock bazaar data",
+    "architecture_type": "Client-Server with Data Collection Pipeline",
+    "deployment": "Local development environment",
+    "scalability": "Single-user, local database"
+  },
+  "nodes": [
+    {
+      "id": "hypixel_api",
+      "label": "Hypixel Skyblock API",
+      "type": "external_api",
+      "category": "data_source",
+      "description": "Official Hypixel game API providing real-time bazaar market data",
+      "url": "https://api.hypixel.net/skyblock/bazaar",
+      "response_format": "JSON",
+      "rate_limits": "Unknown (respectful polling)",
+      "data_structure": {
+        "products": {
+          "product_id": {
+            "buy_summary": [{"pricePerUnit": "float", "amount": "int", "orders": "int"}],
+            "sell_summary": [{"pricePerUnit": "float", "amount": "int", "orders": "int"}]
+          }
+        }
+      },
+      "position": { "x": 50, "y": 100 },
+      "reliability": "High (game API)",
+      "authentication": "API Key (optional)"
+    },
+    {
+      "id": "backend_collector",
+      "label": "Data Collector (backend.py)",
+      "type": "python_process",
+      "category": "data_pipeline",
+      "description": "Continuous data collection and processing daemon",
+      "file": "backend.py",
+      "language": "Python 3.8+",
+      "main_functions": [
+        {
+          "name": "setup_database()",
+          "purpose": "Initialize PostgreSQL database and tables",
+          "tables_created": ["order_book_snapshot", "candles"]
+        },
+        {
+          "name": "fetch_bazaar_data()",
+          "purpose": "HTTP GET request to Hypixel API",
+          "error_handling": "Returns None on failure",
+          "timeout": "10 seconds"
+        },
+        {
+          "name": "filter_and_extract_products()",
+          "purpose": "Process raw API data, filter active products",
+          "filter_criteria": "top_buy_price < 0.7 or top_sell_price < 0.7",
+          "output": "List of product dictionaries with buy/sell orders"
+        },
+        {
+          "name": "store_order_book_snapshot()",
+          "purpose": "Bulk insert order book data to database",
+          "method": "psycopg2.execute_batch()",
+          "conflict_resolution": "ON CONFLICT DO NOTHING"
+        },
+        {
+          "name": "generate_candles()",
+          "purpose": "Create OHLC candlestick data from order book history",
+          "interval": "1 minute",
+          "calculation": "OHLC from buy-side rank 1 orders",
+          "cleanup": "Delete snapshots older than interval"
+        },
+        {
+          "name": "run_collection_loop()",
+          "purpose": "Main event loop coordinating data collection",
+          "fetch_interval": "60 seconds",
+          "candle_interval": "5 minutes",
+          "termination": "Ctrl+C interrupt handling"
+        }
+      ],
+      "configuration": {
+        "database_connection": {
+          "host": "localhost",
+          "database": "bazaar_db",
+          "user": "postgres",
+          "password": "password"
+        },
+        "timing": {
+          "fetch_interval_seconds": 60,
+          "candle_generation_minutes": 1,
+          "candle_cleanup_minutes": 1
+        }
+      },
+      "position": { "x": 250, "y": 100 },
+      "process_type": "Long-running daemon",
+      "memory_usage": "Low",
+      "cpu_usage": "Minimal (API calls every minute)"
+    },
+    {
+      "id": "postgresql_db",
+      "label": "PostgreSQL Database",
+      "type": "relational_database",
+      "category": "data_storage",
+      "description": "Persistent storage for bazaar data with optimized indexing",
+      "version": "13+",
+      "tables": [
+        {
+          "name": "order_book_snapshot",
+          "columns": [
+            {"name": "product_id", "type": "VARCHAR(50)", "key": "PRIMARY KEY"},
+            {"name": "timestamp", "type": "TIMESTAMPTZ", "key": "PRIMARY KEY"},
+            {"name": "side", "type": "VARCHAR(4)", "key": "PRIMARY KEY"},
+            {"name": "rank", "type": "INT", "key": "PRIMARY KEY"},
+            {"name": "price", "type": "DECIMAL(15,2)"},
+            {"name": "amount", "type": "BIGINT"},
+            {"name": "orders", "type": "INT"}
+          ],
+          "indexes": [
+            "idx_orderbook_cleanup (timestamp)",
+            "idx_orderbook_product_time (product_id, timestamp, side, rank)"
+          ],
+          "retention": "Auto-cleanup after candle generation"
+        },
+        {
+          "name": "candles",
+          "columns": [
+            {"name": "id", "type": "SERIAL", "key": "PRIMARY KEY"},
+            {"name": "product_id", "type": "VARCHAR(50)"},
+            {"name": "timestamp", "type": "TIMESTAMPTZ", "unique": "with product_id"},
+            {"name": "open", "type": "DECIMAL(15,2)"},
+            {"name": "high", "type": "DECIMAL(15,2)"},
+            {"name": "low", "type": "DECIMAL(15,2)"},
+            {"name": "close", "type": "DECIMAL(15,2)"},
+            {"name": "buy_volume", "type": "BIGINT"},
+            {"name": "sell_volume", "type": "BIGINT"}
+          ],
+          "indexes": [
+            "idx_candles_product_time (product_id, timestamp DESC)"
+          ]
+        }
+      ],
+      "position": { "x": 250, "y": 250 },
+      "connection_pool": "Single connection per process",
+      "backup_strategy": "None (development)",
+      "performance": "Optimized for time-series queries"
+    },
+    {
+      "id": "flask_api",
+      "label": "Flask REST API (api.py)",
+      "type": "web_server",
+      "category": "api_server",
+      "description": "HTTP server providing data access endpoints",
+      "file": "api.py",
+      "framework": "Flask 2.0+",
+      "port": 5000,
+      "cors_enabled": true,
+      "endpoints": [
+        {
+          "path": "/",
+          "method": "GET",
+          "handler": "index()",
+          "purpose": "Serve main HTML interface",
+          "response": "frontend.html file"
+        },
+        {
+          "path": "/api/products",
+          "method": "GET",
+          "handler": "get_products()",
+          "purpose": "List all available bazaar products",
+          "query": "SELECT DISTINCT product_id FROM candles ORDER BY product_id",
+          "response_format": "JSON array of strings",
+          "error_handling": "Returns empty array on database error"
+        },
+        {
+          "path": "/api/candles",
+          "method": "GET",
+          "handler": "get_candles()",
+          "parameters": {
+            "product": {"type": "string", "required": true},
+            "hours": {"type": "int", "required": false, "default": 1}
+          },
+          "purpose": "Retrieve candlestick data for charting",
+          "query": "SELECT timestamp, open, high, low, close, buy_volume, sell_volume FROM candles WHERE product_id = %s AND timestamp >= %s ORDER BY timestamp ASC",
+          "data_processing": "Convert to chart-compatible format with Unix timestamps",
+          "response_format": "JSON with candles array",
+          "error_handling": "Returns error object with empty candles array"
+        },
+        {
+          "path": "/api/orderbook",
+          "method": "GET",
+          "handler": "get_orderbook()",
+          "parameters": {
+            "product": {"type": "string", "required": true}
+          },
+          "purpose": "Get latest order book snapshot",
+          "queries": [
+            "Find latest timestamp for product",
+            "Get top 5 buy orders (rank ASC)",
+            "Get top 5 sell orders (rank ASC)"
+          ],
+          "response_format": "JSON with buy_orders and sell_orders arrays",
+          "error_handling": "Returns empty arrays on error"
+        }
+      ],
+      "middleware": "Flask-CORS for cross-origin requests",
+      "static_files": "Serves frontend.html",
+      "position": { "x": 450, "y": 175 },
+      "concurrency": "Single-threaded (development)",
+      "performance": "Fast database queries, minimal processing"
+    },
+    {
+      "id": "frontend_html",
+      "label": "Frontend Interface (frontend.html)",
+      "type": "single_page_application",
+      "category": "user_interface",
+      "description": "Browser-based interface with interactive charts and real-time data",
+      "file": "frontend.html",
+      "technologies": ["HTML5", "JavaScript (ES6+)", "Lightweight Charts"],
+      "components": [
+        {
+          "name": "Top Navigation",
+          "elements": ["Logo", "Current Symbol Display", "Price & Change"]
+        },
+        {
+          "name": "Symbol Sidebar",
+          "elements": ["Product List", "Search Box", "24h Change Indicators"]
+        },
+        {
+          "name": "Chart Area",
+          "elements": ["Timeframe Buttons (1m,5m,15m,1h)", "Indicator Selector", "Main Chart", "Volume Panel"]
+        },
+        {
+          "name": "Order Book Panel",
+          "elements": ["Stats Tab", "Custom Algorithm Tab", "Order Book Display"]
+        }
+      ],
+      "javascript_functions": [
+        {
+          "name": "initCharts()",
+          "purpose": "Initialize Lightweight Charts with custom configuration",
+          "features": ["Area series for price", "Volume histogram", "Crosshair", "Responsive sizing"]
+        },
+        {
+          "name": "loadSymbols()",
+          "purpose": "Fetch and display available products",
+          "async_operations": ["API call to /api/products", "Background price loading"]
+        },
+        {
+          "name": "loadChartData()",
+          "purpose": "Load and display candlestick data for selected symbol",
+          "data_transformation": ["Convert timestamps to Unix", "Calculate volumes", "Apply indicators"]
+        },
+        {
+          "name": "updateMarketStats()",
+          "purpose": "Fetch and display order book and statistics",
+          "real_time_updates": "Triggered by chart data loads"
+        },
+        {
+          "name": "runCustomAlgo()",
+          "purpose": "Execute user-defined JavaScript algorithms",
+          "security": "Function constructor with user code",
+          "features": ["Multi-line series support", "Error handling", "Visual feedback"]
+        },
+        {
+          "name": "calculateSMA/EMA/BollingerBands()",
+          "purpose": "Technical indicator calculations",
+          "implementation": "Pure JavaScript mathematical functions"
+        }
+      ],
+      "data_refresh": {
+        "chart_data": "On symbol change or timeframe change",
+        "symbol_prices": "Background update every loadSymbols()",
+        "auto_refresh": "Every 30 seconds (chart data only)"
+      },
+      "position": { "x": 650, "y": 100 },
+      "browser_support": "Modern browsers with ES6 support",
+      "responsive_design": "Adapts to different screen sizes"
+    },
+    {
+      "id": "web_browser",
+      "label": "Web Browser Client",
+      "type": "user_agent",
+      "category": "client_application",
+      "description": "User's web browser rendering the interface and handling interactions",
+      "position": { "x": 650, "y": 175 },
+      "required_features": ["JavaScript enabled", "Modern DOM API", "Fetch API"],
+      "local_storage": "None required",
+      "session_management": "Stateless (API-based)"
+    }
+  ],
+  "edges": [
+    {
+      "id": "api_fetch",
+      "source": "hypixel_api",
+      "target": "backend_collector",
+      "label": "HTTP GET /skyblock/bazaar",
+      "type": "api_request",
+      "frequency": "Every 60 seconds",
+      "data_volume": "~50KB JSON response",
+      "error_handling": "Retry logic in fetch_bazaar_data()",
+      "description": "RESTful API call to retrieve complete bazaar dataset"
+    },
+    {
+      "id": "data_filtering",
+      "source": "backend_collector",
+      "target": "backend_collector",
+      "label": "Filter & Process Data",
+      "type": "data_processing",
+      "logic": "filter_and_extract_products()",
+      "filter_rules": ["Price > 0.7 coins", "Both buy and sell summaries present"],
+      "output_format": "Structured product dictionaries",
+      "description": "Internal data processing pipeline"
+    },
+    {
+      "id": "order_book_storage",
+      "source": "backend_collector",
+      "target": "postgresql_db",
+      "label": "INSERT order_book_snapshot",
+      "type": "database_write",
+      "method": "execute_batch()",
+      "batch_size": "Variable (10-50 records per product)",
+      "conflict_handling": "DO NOTHING (idempotent)",
+      "indexes_used": "product_id, timestamp, side, rank",
+      "description": "Bulk insertion of order book data"
+    },
+    {
+      "id": "candle_generation",
+      "source": "backend_collector",
+      "target": "postgresql_db",
+      "label": "INSERT/UPDATE candles",
+      "type": "database_write",
+      "frequency": "Every 5 minutes",
+      "calculation_method": "OHLC from buy-side rank 1 orders",
+      "update_logic": "ON CONFLICT DO UPDATE",
+      "cleanup_operation": "DELETE old snapshots",
+      "description": "Candlestick data generation and storage"
+    },
+    {
+      "id": "products_query",
+      "source": "flask_api",
+      "target": "postgresql_db",
+      "label": "SELECT DISTINCT product_id",
+      "type": "database_read",
+      "query_optimization": "ORDER BY product_id",
+      "result_caching": "None",
+      "error_handling": "Return empty array",
+      "description": "Retrieve list of tracked products"
+    },
+    {
+      "id": "candles_query",
+      "source": "flask_api",
+      "target": "postgresql_db",
+      "label": "SELECT candle data",
+      "type": "database_read",
+      "parameters": ["product_id", "time_range"],
+      "index_used": "idx_candles_product_time",
+      "data_processing": "Timestamp formatting",
+      "result_size": "Variable (hours * 60 records)",
+      "description": "Time-series data for charting"
+    },
+    {
+      "id": "orderbook_query",
+      "source": "flask_api",
+      "target": "postgresql_db",
+      "label": "SELECT order book data",
+      "type": "database_read",
+      "subqueries": ["MAX timestamp", "Top 5 buy orders", "Top 5 sell orders"],
+      "index_used": "idx_orderbook_product_time",
+      "sorting": "rank ASC",
+      "description": "Latest order book snapshot"
+    },
+    {
+      "id": "html_serving",
+      "source": "flask_api",
+      "target": "web_browser",
+      "label": "Serve frontend.html",
+      "type": "http_response",
+      "content_type": "text/html",
+      "size": "~50KB",
+      "caching": "None",
+      "description": "Initial page load"
+    },
+    {
+      "id": "api_products_call",
+      "source": "web_browser",
+      "target": "flask_api",
+      "label": "GET /api/products",
+      "type": "ajax_request",
+      "trigger": "Page load",
+      "response_handling": "Populate symbol list",
+      "error_handling": "Show 'Failed to load symbols'",
+      "description": "Load available products"
+    },
+    {
+      "id": "api_candles_call",
+      "source": "web_browser",
+      "target": "flask_api",
+      "label": "GET /api/candles",
+      "type": "ajax_request",
+      "parameters": ["product", "hours"],
+      "triggers": ["Symbol selection", "Timeframe change", "Auto-refresh"],
+      "response_processing": "Chart data transformation",
+      "error_handling": "Console error logging",
+      "description": "Load price chart data"
+    },
+    {
+      "id": "api_orderbook_call",
+      "source": "web_browser",
+      "target": "flask_api",
+      "label": "GET /api/orderbook",
+      "type": "ajax_request",
+      "parameters": ["product"],
+      "trigger": "Chart data load",
+      "response_processing": "Update order book display",
+      "error_handling": "Console error logging",
+      "description": "Load order book data"
+    },
+    {
+      "id": "html_rendering",
+      "source": "frontend_html",
+      "target": "web_browser",
+      "label": "DOM Rendering",
+      "type": "client_side_rendering",
+      "engine": "Browser DOM API",
+      "javascript_execution": "ES6+ features",
+      "chart_library": "Lightweight Charts",
+      "interactivity": "Event listeners for UI elements",
+      "description": "Browser renders the complete interface"
+    }
+  ],
+  "data_flow_details": {
+    "collection_pipeline": {
+      "step_1": {
+        "component": "backend_collector",
+        "function": "fetch_bazaar_data()",
+        "input": "None",
+        "output": "Raw JSON from Hypixel API",
+        "error_cases": ["Network timeout", "API unavailable", "Invalid JSON"]
+      },
+      "step_2": {
+        "component": "backend_collector",
+        "function": "filter_and_extract_products()",
+        "input": "API JSON response",
+        "processing": "Extract buy_summary and sell_summary for each product",
+        "filtering": "Remove products with prices ≤ 0.7 coins",
+        "output": "Filtered list of active products with order data"
+      },
+      "step_3": {
+        "component": "backend_collector",
+        "function": "store_order_book_snapshot()",
+        "input": "Filtered product list",
+        "processing": "Flatten buy/sell orders into database records",
+        "database_operation": "Bulk INSERT with conflict resolution",
+        "output": "Stored order book data"
+      },
+      "step_4": {
+        "component": "backend_collector",
+        "function": "generate_candles()",
+        "input": "Recent order book data",
+        "processing": "Calculate OHLC from time windows",
+        "database_operation": "INSERT/UPDATE candles table",
+        "cleanup": "DELETE old snapshots",
+        "output": "Candlestick data for charting"
+      }
+    },
+    "api_request_flow": {
+      "client_request": {
+        "trigger": "User interaction or auto-refresh",
+        "validation": "Parameter presence and format",
+        "database_query": "Appropriate SELECT statement",
+        "data_formatting": "Convert to JSON response format",
+        "error_responses": "Structured error objects"
+      }
+    },
+    "frontend_rendering": {
+      "initialization": "initCharts() - Create chart containers",
+      "data_loading": "loadSymbols() → selectSymbol() → loadChartData()",
+      "ui_updates": "Real-time price display, order book refresh",
+      "user_interactions": "Symbol selection, timeframe changes, indicator application"
+    }
+  },
+  "configuration_and_settings": {
+    "database": {
+      "connection_string": "postgresql://postgres:password@localhost/bazaar_db",
+      "pool_size": 1,
+      "autocommit": "True for setup, False for operations"
+    },
+    "api_server": {
+      "host": "0.0.0.0",
+      "port": 5000,
+      "debug_mode": true,
+      "cors_origins": ["*"]
+    },
+    "data_collection": {
+      "fetch_interval": 60,
+      "candle_interval": 1,
+      "api_timeout": 10,
+      "active_product_threshold": 0.7
+    },
+    "frontend": {
+      "chart_refresh_interval": 30000,
+      "default_timeframe": "5m",
+      "max_candle_history": "24 hours for 1h, 3 hours for 5m, etc."
+    }
+  },
+  "error_handling_and_edge_cases": {
+    "network_failures": {
+      "api_unavailable": "fetch_bazaar_data() returns None, logged to console",
+      "database_connection_lost": "Exception handling in all database operations",
+      "frontend_api_timeout": "Console error logging, UI shows loading states"
+    },
+    "data_quality": {
+      "empty_api_response": "Graceful handling, no data stored",
+      "missing_product_data": "Filtered out in filter_and_extract_products()",
+      "inconsistent_timestamps": "Database constraints prevent duplicates"
+    },
+    "user_interface": {
+      "no_chart_data": "Display 'No data available' message",
+      "invalid_symbol": "API returns error object",
+      "custom_algo_errors": "Try-catch with user-friendly error display"
+    },
+    "performance": {
+      "large_datasets": "Database indexing optimizes queries",
+      "memory_usage": "Limited by Python GIL and single-threaded design",
+      "browser_performance": "Lightweight Charts handles large datasets efficiently"
+    }
+  },
+  "performance_characteristics": {
+    "data_collection": {
+      "cpu_usage": "Minimal (API calls every minute)",
+      "memory_usage": "Low (processes ~50KB JSON)",
+      "network_usage": "~3KB/min average",
+      "database_load": "Burst writes every minute"
+    },
+    "api_server": {
+      "response_time": "< 100ms for typical queries",
+      "concurrent_users": "1 (development)",
+      "database_queries": "Optimized with proper indexing",
+      "memory_footprint": "Low (Flask application)"
+    },
+    "frontend": {
+      "initial_load": "~500KB (HTML + JS + Charts library)",
+      "chart_rendering": "Smooth with Lightweight Charts",
+      "data_refresh": "30-second updates without UI blocking",
+      "browser_compatibility": "Modern browsers only"
+    }
+  },
+  "security_considerations": {
+    "api_access": "No authentication required (development)",
+    "cors_policy": "Allow all origins (*)",
+    "input_validation": "Basic parameter checking",
+    "sql_injection": "Parameterized queries prevent injection",
+    "custom_code_execution": "User JavaScript executed in browser (client-side only)"
+  },
+  "monitoring_and_logging": {
+    "backend_logging": {
+      "database_creation": "✓ Created database 'bazaar_db'",
+      "table_creation": "✓ Database tables created",
+      "data_operations": "✓ Stored X order book entries, ✓ Generated Y candles",
+      "cleanup_operations": "✓ Cleaned up Z old order book entries",
+      "errors": "Error in function_name: exception_message"
+    },
+    "frontend_logging": {
+      "data_loading": "Loaded symbols: X, Loaded candles: Y points",
+      "errors": "Failed to load symbols/data",
+      "algorithm_execution": "Algorithm applied successfully"
+    },
+    "performance_metrics": "None implemented (development)"
+  },
+  "future_enhancements": {
+    "scalability": ["Connection pooling", "Async processing", "Multiple data collectors"],
+    "features": ["Alert system", "Historical data analysis", "Multi-exchange support"],
+    "monitoring": ["Health checks", "Metrics collection", "Error tracking"],
+    "security": ["API authentication", "Rate limiting", "Input sanitization"]
+  }
+}
